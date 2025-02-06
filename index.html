@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta http-equiv="X-UA-Compatible" content="IE=edge">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Document</title>
+	</head>
+	<body>
+		<canvas id="canvas" width="800" height="800" style="border: none; position: absolute; margin: 0; padding: 0; top: 0; left: 0;"></canvas>
+		<script>
+			const ctx = document.getElementById("canvas").getContext("2d");
+
+			const fix_size = multiplier => {
+				const backup_width = ctx.canvas.width;
+				const backup_height = ctx.canvas.height;
+				ctx.canvas.width = backup_width * multiplier;
+				ctx.canvas.height = backup_height * multiplier;
+				ctx.canvas.style.width = backup_width + "px";
+				ctx.canvas.style.height = backup_height + "px";
+				ctx.scale(multiplier, multiplier);
+			}
+
+			ctx.canvas.width = window.innerWidth;
+			ctx.canvas.height = window.innerHeight;
+			ctx.canvas.style.width = window.innerWidth + "px";
+			ctx.canvas.style.height = window.innerHeight + "px";
+
+			fix_size(window.devicePixelRatio);
+			
+			const fill_circle = (position, radius, color) => {
+				ctx.beginPath();
+				ctx.arc(position.x, position.y, radius, 0, 2 * Math.PI);
+				ctx.fillStyle = color;
+				ctx.fill();
+			};
+
+			const lerp = (a, b, t) => a + (b - a) * t;
+			const alerp = (a, b, v) => (v - a) / (b - a);
+
+			class Vector2 {
+				constructor(x, y) {
+					this.x = x;
+					this.y = y;
+				}
+				apply(other) {
+					this.x = other.x;
+					this.y = other.y;
+				}
+				copy() {
+					return new Vector2(this.x, this.y);
+				}
+				lerp(other, t) {
+					this.x = lerp(this.x, other.x, t);
+					this.y = lerp(this.y, other.y, t);
+				}
+				equals(other) {
+					return this.x == other.x && this.y == other.y;
+				}
+				near(other, threshold) {
+					return Math.abs(this.x - other.x) < threshold && Math.abs(this.y - other.y) < threshold;
+				}
+				static lerp(a, b, t) {
+					return new Vector2(lerp(a.x, b.x, t), lerp(a.y, b.y, t));
+				}
+			}
+
+			class Point {
+				constructor(position, color) {
+					this.position = position;
+					this.color = color;
+				}
+			}
+
+			let grounded_points;
+			let moving_points;
+			let max_layer;
+
+			const point_radius = 5;
+			const tps = 60;
+			let paused = false;
+			let show_layers = true;
+			let pause_on_queue = false;
+
+			let target;
+			let target_path;
+			const regular_path_color = "rgb(200, 200, 200)";
+			const target_path_color = "black";
+			let path_completed;
+
+			let t_interval = 0.005;
+			let t_value;
+			let t_up;
+
+			const generate = (grounded_points_count, should_reset) => {
+				const backup_grounded_points = grounded_points;
+				grounded_points = [];
+				moving_points = [];
+				max_layer = Math.max(...moving_points.map(p => p.layer));
+				target_path = [];
+				path_completed = false
+				t_value = 0;
+				t_up = false;
+
+				if(backup_grounded_points && backup_grounded_points.length && !should_reset) {
+					grounded_points = backup_grounded_points;
+				} else {
+					const scaled_width = ctx.canvas.width / window.devicePixelRatio;
+					const scaled_height = ctx.canvas.height / window.devicePixelRatio;
+					grounded_points.push(new Point(new Vector2(scaled_width / 3, scaled_height / 3 * 2), "blue"));
+					grounded_points.push(new Point(new Vector2(lerp(scaled_width / 3, scaled_width / 3 * 2, 0.5), scaled_height / 3), "blue"));
+					grounded_points.push(new Point(new Vector2(scaled_width / 3 * 2, scaled_height / 3 * 2), "blue"));
+				}
+
+				for(let p = 0; p < grounded_points.length - 1; p++) {
+					const a = grounded_points[p];
+					const b = grounded_points[p + 1];
+					moving_points.push({
+						point: new Point(a.position.copy(), "red"),
+						layer: 1,
+						start: a,
+						end: b,
+					});
+				}
+
+				max_layer = Math.max(...moving_points.map(p => p.layer));
+				while(moving_points.filter(point => point.layer == max_layer).length > 2) {
+					const max_layer_points = moving_points.filter(point => point.layer == max_layer);
+					for(let p = 0; p < max_layer_points.length - 1; p++) {
+						const a = max_layer_points[p];
+						const b = max_layer_points[p + 1];
+						moving_points.push({
+							point: new Point(a.point.position.copy(), "red"),
+							layer: a.layer + 1,
+							start: a.point,
+							end: b.point,
+						});
+					}
+					max_layer++;
+				}
+
+				target = new Point(moving_points.filter(p => p.layer == max_layer)[0].start.position.copy(), "green");
+			}
+
+			generate(3, false);
+
+			document.addEventListener("keydown", e => {
+				if(e.key == " ") {
+					paused = !paused;
+					e.preventDefault();
+				} else if(e.key == "r") {
+					generate(3, true);
+				} else if(e.key == "c") {
+					generate(grounded_points.length, false);
+				} else if(e.key == "t" && path_completed) {
+					t_value = 1;
+					t_up = false;
+					pause_on_queue = true;
+				} else if(e.key == "s" && path_completed) {
+					t_value = 0;
+					t_up = true;
+					pause_on_queue = true;
+				} else if(e.key == "l") {
+					show_layers = !show_layers;
+				} else if(e.key == "ArrowUp") {
+					t_interval += 0.001;
+					if(t_interval > 1) t_interval = 1;
+					e.preventDefault();
+				} else if(e.key == "ArrowDown") {
+					t_interval -= 0.001;
+					if(t_interval < 0) t_interval = 0;
+					e.preventDefault();
+				} else if(e.key == "i") {
+					t_interval = 0.005;
+				}
+			});
+
+			ctx.canvas.addEventListener("mousedown", e => {
+				const position = new Vector2(e.clientX - ctx.canvas.getBoundingClientRect().left, e.clientY - ctx.canvas.getBoundingClientRect().top);
+
+				if(e.button == 0) {
+					grounded_points.push(new Point(position, "blue"));
+					generate(grounded_points.length, false);
+				} else if(e.button == 2) {
+					const filtered = grounded_points.filter(point => point.position.near(position, point_radius * 2));
+					const index = grounded_points.indexOf(filtered[filtered.length - 1]);
+
+					if(index > -1) {
+						grounded_points.splice(index, 1);
+						if(grounded_points.length) generate(grounded_points.length, false);
+					}
+				}
+			});
+
+			ctx.canvas.addEventListener("contextmenu", e => e.preventDefault());
+
+			window.addEventListener("resize", () => {
+				ctx.canvas.width = window.innerWidth;
+				ctx.canvas.height = window.innerHeight;
+				ctx.canvas.style.width = window.innerWidth + "px";
+				ctx.canvas.style.height = window.innerHeight + "px";
+
+				fix_size(window.devicePixelRatio);
+			});
+
+			setInterval(() => {
+				if(paused) return;
+				if(t_up) {
+					if(t_value < 1) {
+						t_value += t_interval;
+					} else {
+						t_value = 1;
+						t_up = false;
+						path_completed = true;
+					}
+				} else {
+					if(t_value > 0) {
+						t_value -= t_interval;
+					} else {
+						t_value = 0;
+						t_up = true;
+					}
+				}
+
+				for(let i = 0; i < moving_points.length; i++) {
+					const point = moving_points[i];
+					point.point.position = Vector2.lerp(point.start.position, point.end.position, t_value);
+				}
+
+				const a = moving_points.filter(p => p.layer == Math.max(...moving_points.map(p => p.layer)))[0];
+				const b = moving_points.filter(p => p.layer == Math.max(...moving_points.map(p => p.layer)))[1];
+				target.position = Vector2.lerp(a.point.position, b.point.position, t_value);
+
+				if(!path_completed) target_path.push(target.position);
+				if(pause_on_queue) {
+					paused = true;
+					pause_on_queue = false;
+				}
+			}, 1000 / tps);
+
+			const render = () => {
+				ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+				ctx.strokeStyle = regular_path_color;
+
+				if(show_layers) {
+					const outline = new Path2D();
+
+					for(let p = 0; p < grounded_points.length; p++) {
+						if(p == 0) {
+							outline.moveTo(grounded_points[p].position.x, grounded_points[p].position.y);
+						} else {
+							outline.lineTo(grounded_points[p].position.x, grounded_points[p].position.y);
+						}
+					}
+
+					ctx.stroke(outline);
+
+					for(let l = 1; l <= Math.max(...moving_points.map(p => p.layer)); l++) {
+						if(moving_points.filter(p => p.layer == l).length < 2) {
+							continue;
+						}
+						const layer = new Path2D();
+						for(let p = 0; p < moving_points.filter(a => a.layer == l).length; p++) {
+							const point = moving_points.filter(a => a.layer == l)[p];
+							if(p == 0) {
+								layer.moveTo(point.point.position.x, point.point.position.y);
+							} else {
+								layer.lineTo(point.point.position.x, point.point.position.y);
+							}
+						}
+						ctx.stroke(layer);
+					}
+				}
+
+				const target_path_path = new Path2D();
+				for(let p = 0; p < target_path.length; p++) {
+					if(p == 0) {
+						target_path_path.moveTo(target_path[p].x, target_path[p].y);
+					} else {
+						target_path_path.lineTo(target_path[p].x, target_path[p].y);
+					}
+				}
+				ctx.strokeStyle = target_path_color;
+				ctx.stroke(target_path_path);
+
+				fill_circle(target.position, point_radius / 2, "green");
+
+				if(show_layers) {
+					for(let p = 0; p < grounded_points.length; p++) {
+						fill_circle(grounded_points[p].position, point_radius, grounded_points[p].color);
+					}
+
+					for(let i = 0; i < moving_points.length; i++) {
+						fill_circle(moving_points[i].point.position, point_radius * 2/3, moving_points[i].point.color);
+					}
+				} else {
+					fill_circle(grounded_points[0].position, point_radius, grounded_points[0].color);
+					const last = grounded_points[grounded_points.length - 1];
+					fill_circle(last.position, point_radius, last.color);
+				}
+
+				requestAnimationFrame(render);
+			}
+			render();
+		</script>
+	</body>
+</html>
